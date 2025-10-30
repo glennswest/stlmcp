@@ -9,6 +9,9 @@ from typing import Any
 import vedo
 import numpy as np
 from mcp.server.fastmcp import FastMCP
+import subprocess
+import tempfile
+import signal
 
 # Initialize FastMCP server
 mcp = FastMCP("STL Viewer")
@@ -20,6 +23,9 @@ state = {
     "camera_position": None,
     "camera_focal_point": None,
     "camera_view_up": None,
+    "preview_process": None,
+    "preview_enabled": False,
+    "preview_dir": None,
 }
 
 
@@ -28,6 +34,36 @@ def ensure_plotter():
     if state["plotter"] is None:
         state["plotter"] = vedo.Plotter(offscreen=True, size=(1920, 1080))
     return state["plotter"]
+
+
+def update_preview():
+    """Update the preview window with current view"""
+    if not state["preview_enabled"] or not state["meshes"] or not state["preview_dir"]:
+        return
+
+    try:
+        plt = ensure_plotter()
+        plt.clear()
+
+        # Add all meshes
+        for mesh in state["meshes"].values():
+            plt.add(mesh)
+
+        # Restore camera settings
+        if state["camera_position"]:
+            plt.camera.SetPosition(*state["camera_position"])
+        if state["camera_focal_point"]:
+            plt.camera.SetFocalPoint(*state["camera_focal_point"])
+        if state["camera_view_up"]:
+            plt.camera.SetViewUp(*state["camera_view_up"])
+
+        # Render and save to shared location
+        preview_path = os.path.join(state["preview_dir"], "current_preview.png")
+        plt.show(interactive=False)
+        plt.screenshot(preview_path)
+
+    except Exception as e:
+        print(f"Error updating preview: {e}")
 
 
 @mcp.tool()
@@ -77,6 +113,9 @@ def load_stl(file_path: str, name: str = None) -> str:
                 "z": [float(bounds[4]), float(bounds[5])],
             }
         }
+
+        # Update preview if enabled
+        update_preview()
 
         return f"Successfully loaded '{name}':\n{json.dumps(info, indent=2)}"
 
@@ -180,6 +219,9 @@ def set_camera(
     if zoom:
         camera.Zoom(zoom)
 
+    # Update preview if enabled
+    update_preview()
+
     return f"Camera updated: position={position}, focal_point={focal_point}, view_up={view_up}, zoom={zoom}"
 
 
@@ -204,6 +246,9 @@ def rotate_camera(azimuth: float = 0, elevation: float = 0, roll: float = 0) -> 
         plt.camera.Elevation(elevation)
     if roll != 0:
         plt.camera.Roll(roll)
+
+    # Update preview if enabled
+    update_preview()
 
     return f"Camera rotated: azimuth={azimuth}°, elevation={elevation}°, roll={roll}°"
 
@@ -311,6 +356,9 @@ def reset_view() -> str:
     state["camera_focal_point"] = None
     state["camera_view_up"] = None
 
+    # Update preview if enabled
+    update_preview()
+
     return "View reset to default"
 
 
@@ -366,6 +414,9 @@ def set_model_color(name: str, color: str) -> str:
     mesh = state["meshes"][name]
     mesh.color(color)
 
+    # Update preview if enabled
+    update_preview()
+
     return f"Model '{name}' color set to '{color}'"
 
 
@@ -390,7 +441,95 @@ def set_model_opacity(name: str, opacity: float) -> str:
     mesh = state["meshes"][name]
     mesh.alpha(opacity)
 
+    # Update preview if enabled
+    update_preview()
+
     return f"Model '{name}' opacity set to {opacity}"
+
+
+@mcp.tool()
+def toggle_preview(enable: bool = True) -> str:
+    """
+    Enable or disable the live preview window showing the current 3D view.
+
+    Args:
+        enable: True to show the preview window, False to hide it
+
+    Returns:
+        Confirmation message
+    """
+    if enable:
+        # Check if already running
+        if state["preview_process"] is not None:
+            try:
+                # Check if process is still alive
+                if state["preview_process"].poll() is None:
+                    return "Preview window is already running"
+            except:
+                pass
+
+        # Create temporary directory for preview images
+        if state["preview_dir"] is None:
+            state["preview_dir"] = tempfile.mkdtemp(prefix="stl_preview_")
+
+        # Get the path to the preview window script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        preview_script = os.path.join(script_dir, "preview_window.py")
+
+        # Get the python executable from the venv
+        python_exe = os.path.join(script_dir, "venv", "bin", "python")
+        if not os.path.exists(python_exe):
+            python_exe = "python3"
+
+        try:
+            # Launch the preview window as a subprocess
+            state["preview_process"] = subprocess.Popen(
+                [python_exe, preview_script, state["preview_dir"]],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True
+            )
+
+            state["preview_enabled"] = True
+
+            # Give the window time to start
+            import time
+            time.sleep(1)
+
+            # Update with current view
+            update_preview()
+
+            return "Preview window enabled. The window shows the current 3D view and updates automatically when you change the camera or modify models."
+
+        except Exception as e:
+            state["preview_enabled"] = False
+            return f"Error starting preview window: {e}. Make sure you have a display available."
+
+    else:
+        state["preview_enabled"] = False
+
+        # Terminate the preview process
+        if state["preview_process"] is not None:
+            try:
+                state["preview_process"].terminate()
+                state["preview_process"].wait(timeout=2)
+            except:
+                try:
+                    state["preview_process"].kill()
+                except:
+                    pass
+            state["preview_process"] = None
+
+        # Clean up preview directory
+        if state["preview_dir"] and os.path.exists(state["preview_dir"]):
+            try:
+                import shutil
+                shutil.rmtree(state["preview_dir"])
+            except:
+                pass
+            state["preview_dir"] = None
+
+        return "Preview window disabled"
 
 
 if __name__ == "__main__":
