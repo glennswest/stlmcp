@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "stl-viewer": {
+      "command": "/Volumes/minihome/gwest/projects/stlmcp/venv/bin/python",
+      "args": ["/Volumes/minihome/gwest/projects/stlmcp/server.py"]
+    }
+  }
+}
