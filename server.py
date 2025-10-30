@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 import subprocess
 import tempfile
 import signal
+from shape_detector import ShapeDetector
 
 # Initialize FastMCP server
 mcp = FastMCP("STL Viewer")
@@ -541,6 +542,114 @@ def toggle_preview(enable: bool = True) -> str:
             state["preview_dir"] = None
 
         return "Preview window disabled"
+
+
+@mcp.tool()
+def scan_shapes(model_name: str, tolerance: float = 0.1, generate_openscad: bool = True) -> str:
+    """
+    Scan an STL model to detect geometric primitives (boxes, cylinders, spheres, etc.)
+    that can be recreated in OpenSCAD. Identifies both positive shapes and negative
+    features like holes.
+
+    Args:
+        model_name: Name of the loaded model to scan
+        tolerance: Detection tolerance (0.01-1.0, lower is stricter)
+        generate_openscad: Whether to generate OpenSCAD code
+
+    Returns:
+        JSON with detected shapes and optional OpenSCAD code
+    """
+    if model_name not in state["meshes"]:
+        return f"Error: Model '{model_name}' not found. Available models: {list(state['meshes'].keys())}"
+
+    mesh = state["meshes"][model_name]
+
+    try:
+        # Create detector and scan for shapes
+        import traceback
+        detector = ShapeDetector(mesh, tolerance=tolerance)
+        shapes = detector.detect_all()
+
+        # Build results
+        result = {
+            "model": model_name,
+            "shapes_found": len(shapes),
+            "shapes": []
+        }
+
+        # Add shape details
+        for shape in shapes:
+            shape_dict = shape.to_dict()
+            result["shapes"].append(shape_dict)
+
+        # Generate OpenSCAD code if requested
+        if generate_openscad:
+            openscad_code = detector.generate_openscad()
+            result["openscad"] = openscad_code
+
+        # Create summary
+        shape_types = {}
+        for shape in shapes:
+            key = shape.type + (" (hole)" if shape.is_negative else " (solid)")
+            shape_types[key] = shape_types.get(key, 0) + 1
+
+        summary = f"Detected {len(shapes)} shape(s) in '{model_name}':\n"
+        for shape_type, count in shape_types.items():
+            summary += f"  - {count}x {shape_type}\n"
+
+        if generate_openscad:
+            summary += f"\nOpenSCAD code generated ({len(openscad_code)} characters)"
+
+        result["summary"] = summary
+
+        return json.dumps(result, indent=2)
+
+    except Exception as e:
+        import traceback
+        return f"Error scanning shapes: {str(e)}\n{traceback.format_exc()}"
+
+
+@mcp.tool()
+def export_openscad(model_name: str, output_path: str, tolerance: float = 0.1) -> str:
+    """
+    Scan a model for shapes and export OpenSCAD code to a file.
+
+    Args:
+        model_name: Name of the loaded model
+        output_path: Path where to save the .scad file
+        tolerance: Detection tolerance (0.01-1.0)
+
+    Returns:
+        Confirmation message with file path
+    """
+    if model_name not in state["meshes"]:
+        return f"Error: Model '{model_name}' not found"
+
+    mesh = state["meshes"][model_name]
+
+    try:
+        # Detect shapes
+        detector = ShapeDetector(mesh, tolerance=tolerance)
+        shapes = detector.detect_all()
+
+        # Generate OpenSCAD code
+        openscad_code = detector.generate_openscad()
+
+        # Add header
+        header = f"// Generated from STL: {model_name}\n"
+        header += f"// Shapes detected: {len(shapes)}\n"
+        header += f"// Tolerance: {tolerance}\n\n"
+
+        full_code = header + openscad_code
+
+        # Write to file
+        with open(output_path, 'w') as f:
+            f.write(full_code)
+
+        return f"OpenSCAD code exported to: {output_path}\nDetected {len(shapes)} shape(s)"
+
+    except Exception as e:
+        return f"Error exporting OpenSCAD: {str(e)}"
 
 
 if __name__ == "__main__":
