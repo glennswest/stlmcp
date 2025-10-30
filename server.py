@@ -114,8 +114,16 @@ def load_stl(file_path: str, name: str = None) -> str:
             }
         }
 
-        # Update preview if enabled
-        update_preview()
+        # Auto-enable preview if not already enabled (default behavior)
+        if not state["preview_enabled"]:
+            try:
+                toggle_preview(True)
+            except Exception as e:
+                # If preview fails to start, continue without it
+                print(f"Note: Could not auto-start preview window: {e}")
+        else:
+            # Update preview if already enabled
+            update_preview()
 
         return f"Successfully loaded '{name}':\n{json.dumps(info, indent=2)}"
 
@@ -451,6 +459,9 @@ def set_model_opacity(name: str, opacity: float) -> str:
 def toggle_preview(enable: bool = True) -> str:
     """
     Enable or disable the live preview window showing the current 3D view.
+
+    Note: The preview window is enabled by default when you load the first STL file.
+    Use this tool to manually disable or re-enable it.
 
     Args:
         enable: True to show the preview window, False to hide it
